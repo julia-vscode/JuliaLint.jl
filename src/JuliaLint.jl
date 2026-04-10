@@ -1,6 +1,6 @@
 module JuliaLint
 
-using JuliaWorkspaces
+using JuliaWorkspaces, ArgParse
 
 const _SEVERITY_COLORS = Dict{Symbol,String}(
     :error       => "\e[31m",
@@ -14,14 +14,17 @@ function _print_diagnostic(io::IO, diag, text_file, base_path, use_color::Bool)
     abs_path = JuliaWorkspaces.uri2filepath(text_file.uri)
     rel_path = relpath(abs_path, base_path)
 
+    loc = string(rel_path, ":", pos.line, ":", pos.column)
+
     if use_color
-        file_uri = string(text_file.uri)
-        print(io, "\e]8;;", file_uri, "\e\\", rel_path, "\e]8;;\e\\")
+        # vscode://file/<path>:<line>:<column> opens at exact position in VS Code and Windows Terminal
+        file_link = "vscode://file/" * replace(abs_path, '\\' => '/') * ":" * string(pos.line) * ":" * string(pos.column)
+        print(io, "\e]8;;", file_link, "\e\\", loc, "\e]8;;\e\\")
     else
-        print(io, rel_path)
+        print(io, loc)
     end
 
-    print(io, ":", pos.line, ":", pos.column, ": ")
+    print(io, ": ")
 
     sev_str = string(diag.severity)
     if use_color
@@ -40,8 +43,24 @@ function _print_diagnostic(io::IO, diag, text_file, base_path, use_color::Bool)
     println(io)
 end
 
+function parse_commandline(ARGS)
+    s = ArgParseSettings()
+
+    @add_arg_table! s begin
+        "--debug"
+            help = "enable debug mode"
+            action = :store_true
+    end
+
+    return parse_args(ARGS, s)
+end
+
 function (@main)(ARGS)
+    parsed_args = parse_commandline(ARGS)
     ENV["JULIA_LOAD_PATH"] = ";"
+    if parsed_args["debug"]
+        ENV["JULIA_DEBUG"] = "JuliaWorkspaces"
+    end
     jw = workspace_from_folders([pwd()], dynamic=JuliaWorkspaces.DynamicIndexingOnly)
 
     all_diagnostics = get_diagnostics_blocking(jw)
