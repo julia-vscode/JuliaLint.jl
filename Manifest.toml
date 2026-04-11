@@ -2,7 +2,7 @@
 
 julia_version = "1.12.5"
 manifest_format = "2.0"
-project_hash = "2d750bf37e65d038f8a34e5e9884f1036010de60"
+project_hash = "8a1e0bd87649c973e6fc499ab7471b76531a664c"
 
 [[deps.ArgParse]]
 deps = ["Logging", "TextWrap"]
@@ -82,7 +82,7 @@ uuid = "b9b8584e-8fd3-41f9-ad0c-7255d428e418"
 version = "3.0.1"
 
 [[deps.JuliaLint]]
-deps = ["JuliaWorkspaces"]
+deps = ["ArgParse", "JuliaWorkspaces"]
 path = "."
 uuid = "0ca8a2e7-ee8a-47e9-8624-e03a53d93e73"
 version = "0.1.0"

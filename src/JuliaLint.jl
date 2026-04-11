@@ -1,6 +1,6 @@
 module JuliaLint
 
-using JuliaWorkspaces, ArgParse
+using JuliaWorkspaces, ArgParse, Logging
 
 const _SEVERITY_COLORS = Dict{Symbol,String}(
     :error       => "\e[31m",
@@ -35,9 +35,11 @@ function parse_commandline(ARGS)
     s = ArgParseSettings()
 
     @add_arg_table! s begin
-        "--debug"
-            help = "enable debug mode"
-            action = :store_true
+        "--log"
+            help = "set log level (debug or info); warn/error always shown"
+            arg_type = String
+            metavar = "LEVEL"
+            range_tester = x -> x in ("debug", "info")
     end
 
     return parse_args(ARGS, s)
@@ -46,8 +48,13 @@ end
 function (@main)(ARGS)
     parsed_args = parse_commandline(ARGS)
     ENV["JULIA_LOAD_PATH"] = ";"
-    if parsed_args["debug"]
-        ENV["JULIA_DEBUG"] = "JuliaWorkspaces"
+    log_level = parsed_args["log"]
+    if log_level == "debug"
+        global_logger(ConsoleLogger(stderr, Logging.Debug))
+    elseif log_level == "info"
+        global_logger(ConsoleLogger(stderr, Logging.Info))
+    else
+        global_logger(ConsoleLogger(stderr, Logging.Warn))
     end
     jw = workspace_from_folders([pwd()], dynamic=JuliaWorkspaces.DynamicIndexingOnly)
 
