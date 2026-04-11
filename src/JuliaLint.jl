@@ -9,29 +9,17 @@ const _SEVERITY_COLORS = Dict{Symbol,String}(
     :hint        => "\e[2m",
 )
 
-function _print_diagnostic(io::IO, diag, text_file, base_path, use_color::Bool)
+function _print_diagnostic(io::IO, diag, text_file, use_color::Bool)
     pos = position_at(text_file.content, first(diag.range))
     abs_path = JuliaWorkspaces.uri2filepath(text_file.uri)
-    rel_path = relpath(abs_path, base_path)
 
-    loc = string(rel_path, ":", pos.line, ":", pos.column)
+    loc = string(abs_path, ":", pos.line, ":", pos.column)
 
-    if use_color
-        # vscode://file/<path>:<line>:<column> opens at exact position in VS Code and Windows Terminal
-        file_link = "vscode://file/" * replace(abs_path, '\\' => '/') * ":" * string(pos.line) * ":" * string(pos.column)
-        print(io, "\e]8;;", file_link, "\e\\", loc, "\e]8;;\e\\")
-    else
-        print(io, loc)
-    end
-
-    print(io, ": ")
-
-    sev_str = string(diag.severity)
     if use_color
         color = get(_SEVERITY_COLORS, diag.severity, "")
-        print(io, color, sev_str, "\e[0m")
+        print(io, loc, ": ", color, string(diag.severity), "\e[0m")
     else
-        print(io, sev_str)
+        print(io, loc, ": ", string(diag.severity))
     end
 
     print(io, ": ", diag.message)
@@ -66,22 +54,21 @@ function (@main)(ARGS)
     all_diagnostics = get_diagnostics_blocking(jw)
 
     use_color = stdout isa Base.TTY
-    base_path = pwd()
 
     entries = []
     for (uri, diagnostics) in all_diagnostics
         isempty(diagnostics) && continue
         text_file = get_text_file(jw, uri)
-        rel_path = relpath(JuliaWorkspaces.uri2filepath(uri), base_path)
+        abs_path = JuliaWorkspaces.uri2filepath(uri)
         for diag in diagnostics
-            push!(entries, (rel_path, first(diag.range), diag, text_file))
+            push!(entries, (abs_path, first(diag.range), diag, text_file))
         end
     end
     sort!(entries, by=x -> (x[1], x[2]))
 
     counts = Dict{Symbol,Int}()
     for (_, _, diag, text_file) in entries
-        _print_diagnostic(stdout, diag, text_file, base_path, use_color)
+        _print_diagnostic(stdout, diag, text_file, use_color)
         counts[diag.severity] = get(counts, diag.severity, 0) + 1
     end
 
