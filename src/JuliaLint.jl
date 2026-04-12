@@ -382,7 +382,7 @@ function (@main)(ARGS)
     out_file  = parsed_args["output-file"]
 
     # --- Lint ---
-    jw = workspace_from_folders([target_path], dynamic=JuliaWorkspaces.DynamicIndexingOnly)
+    jw = workspace_from_folders([target_path], dynamic=JuliaWorkspaces.DynamicIndexingOnly, symbolcache_download=true)
     all_diagnostics = get_diagnostics_blocking(jw)
 
     # --- Collect & sort entries ---
