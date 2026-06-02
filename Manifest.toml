@@ -39,11 +39,19 @@ git-tree-sha1 = "eadf4dcb8abb42eba0e07b09c77a6a4d50bcfba0"
 uuid = "2e8d271d-f2e2-407b-a864-17eb2156783e"
 version = "2.0.2"
 
-[[deps.CodecZlib]]
-deps = ["TranscodingStreams", "Zlib_jll"]
-git-tree-sha1 = "962834c22b66e32aa10f7611c08c8ca4e20749a9"
-uuid = "944b1d66-785c-5afd-91f1-9de20f533193"
-version = "0.7.8"
+[[deps.CommonMark]]
+deps = ["PrecompileTools"]
+git-tree-sha1 = "731edf630eb23140a3c7a2e74d4186f562996d76"
+uuid = "a80b9123-70ca-4bc0-993e-6e3bcb318db6"
+version = "1.0.2"
+
+    [deps.CommonMark.extensions]
+    CommonMarkMarkdownASTExt = "MarkdownAST"
+    CommonMarkMarkdownExt = "Markdown"
+
+    [deps.CommonMark.weakdeps]
+    Markdown = "d6f4376e-aef5-505a-96c1-9c027394607a"
+    MarkdownAST = "d0879d2d-cac2-40c8-9cee-1863dc0c7391"
 
 [[deps.CompilerSupportLibraries_jll]]
 deps = ["Artifacts", "Libdl"]
@@ -70,6 +78,11 @@ version = "0.1.11"
 uuid = "7b1f6079-737a-58dc-b8bc-7a2ca5c1b5ee"
 version = "1.11.0"
 
+[[deps.Glob]]
+git-tree-sha1 = "246c628cec062230b7d183aab88841fa94fcabe9"
+uuid = "c27321d9-0574-5035-807b-f59d2c89b15c"
+version = "1.5.0"
+
 [[deps.InteractiveUtils]]
 deps = ["Markdown"]
 uuid = "b77e0a4c-d291-57a0-90e8-8db25a27a240"
@@ -86,6 +99,12 @@ deps = ["CancellationTokens", "JSON", "Sockets", "UUIDs"]
 git-tree-sha1 = "89ced76119d7b8fbe51d0b9860833fe9904880b7"
 uuid = "b9b8584e-8fd3-41f9-ad0c-7255d428e418"
 version = "3.0.1"
+
+[[deps.JuliaFormatter]]
+deps = ["CommonMark", "Glob", "JuliaSyntax", "PrecompileTools", "TOML"]
+git-tree-sha1 = "734a648c54e0512112049150965e85c887ae7fa3"
+uuid = "98e50ef6-434e-11e9-1051-2b60c6c9e899"
+version = "2.4.0"
 
 [[deps.JuliaLint]]
 deps = ["ArgParse", "JSON", "JuliaWorkspaces", "Logging"]
@@ -104,7 +123,7 @@ uuid = "ac6e5ff7-fb65-4e79-a425-ec3bc9c03011"
 version = "1.12.0"
 
 [[deps.JuliaWorkspaces]]
-deps = ["AutoHashEquals", "CSTParser", "CancellationTokens", "CodecZlib", "Downloads", "InteractiveUtils", "JSONRPC", "JuliaSyntax", "LibGit2", "Logging", "Pkg", "REPL", "SHA", "Salsa", "Scratch", "Sockets", "Tar", "TestItemDetection", "UUIDs"]
+deps = ["AutoHashEquals", "CSTParser", "CancellationTokens", "InteractiveUtils", "JSONRPC", "JuliaFormatter", "JuliaSyntax", "LibGit2", "Logging", "Pkg", "REPL", "Runic", "SHA", "Salsa", "Scratch", "Sockets", "TestItemDetection", "UUIDs"]
 path = "C:\\Users\\david\\.julia\\dev\\JuliaWorkspaces"
 uuid = "e554591c-7f10-434f-9f27-2097f62a04fd"
 version = "7.0.1-DEV"
@@ -211,6 +230,12 @@ deps = ["SHA"]
 uuid = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
 version = "1.11.0"
 
+[[deps.Runic]]
+deps = ["JuliaSyntax", "Preferences"]
+git-tree-sha1 = "657ea2d3240b30fd21dec3e2fe772de50e9e8645"
+uuid = "62bfec6d-59d7-401d-8490-b29ee721c001"
+version = "1.5.1"
+
 [[deps.SHA]]
 uuid = "ea8e919c-243c-51af-8825-aaa63cd721ce"
 version = "0.7.0"
@@ -219,7 +244,7 @@ version = "0.7.0"
 deps = ["ExceptionUnwrapping", "MacroTools"]
 path = "../Salsa"
 uuid = "1fbf2c77-44e2-4d5d-8131-0fa618a5c278"
-version = "2.3.2-DEV"
+version = "2.4.1-DEV"
 
 [[deps.Scratch]]
 deps = ["Dates"]
@@ -269,11 +294,6 @@ version = "1.0.2"
 git-tree-sha1 = "468b4685af4abe0e9fd4d7bf495a6554a6276e75"
 uuid = "0796e94c-ce3b-5d07-9a54-7f471281c624"
 version = "0.5.29"
-
-[[deps.TranscodingStreams]]
-git-tree-sha1 = "0c45878dcfdcfa8480052b6ab162cdd138781742"
-uuid = "3bb67fe8-82b1-5028-8e26-92a6c54297fa"
-version = "0.11.3"
 
 [[deps.UUIDs]]
 deps = ["Random", "SHA"]
