@@ -75,6 +75,75 @@ julialint --format sarif -o results.sarif src/
 | `json` | Structured diagnostics grouped by file, suitable for further processing. |
 | `sarif` | SARIF v2.1.0 output compatible with GitHub Code Scanning and other SARIF consumers. |
 
+## Configuration
+
+> [!WARNING]
+> The `julialint.toml` configuration format is **experimental**. The available
+> keys, their values, and default behavior may change in any release without
+> notice.
+
+Linting behavior can be customized with a `julialint.toml` file (the name is
+matched case-insensitively, so `JuliaLint.toml` also works). Place the file in
+your project; it applies to all Julia files in that directory and its
+subdirectories.
+
+Configuration is hierarchical: when several `julialint.toml` files exist along a
+file's path, they are merged with deeper (more specific) files overriding
+shallower ones on a per-key basis.
+
+Every option is a boolean (`true`/`false`) unless noted otherwise. All checks
+are enabled by default except `syntax-warnings`.
+
+### Diagnostic categories
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `syntax-errors` | `true` | Report Julia syntax errors. |
+| `syntax-warnings` | `false` | Report Julia syntax warnings. |
+| `testitem-errors` | `true` | Report errors in `@testitem` blocks. |
+| `toml-syntax-errors` | `true` | Report TOML syntax errors in config, `Project.toml`, and `Manifest.toml` files. |
+| `lint-config-errors` | `true` | Report invalid keys or values in the `julialint.toml` file itself. |
+| `format-config-errors` | `true` | Report errors in formatter configuration files. |
+| `static-lint` | `true` | Master switch for all StaticLint semantic checks below. Set to `false` to disable them all at once. |
+| `missing-refs` | `"symbols"` | Control reporting of missing references. One of `"none"` (off), `"symbols"` (identifiers only), or `"all"`. |
+
+### StaticLint checks
+
+These checks apply only when `static-lint` is enabled.
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `call` | `true` | Flag possible method call errors (wrong number/type of arguments). |
+| `iter` | `true` | Flag loop iterators that will likely error. |
+| `nothingcomp` | `true` | Flag comparisons against `nothing` that should use `isnothing`/`===`. |
+| `constif` | `true` | Flag boolean literals used as an `if` condition (always or never runs). |
+| `lazy` | `true` | Flag `&&`/`||` whose first argument is a boolean literal. |
+| `datadecl` | `true` | Flag non-`DataType` values used in a type declaration. |
+| `typeparam` | `true` | Flag type parameters that are declared but never used. |
+| `modname` | `true` | Flag a module whose name matches that of its parent. |
+| `pirates` | `true` | Flag type piracy (extending imported functions without an owned type). |
+| `useoffuncargs` | `true` | Flag function arguments that are declared but never used. |
+| `kwdefault` | `true` | Flag keyword default values that don't match the argument type. |
+| `literal` | `true` | Flag inappropriate use of literal values. |
+| `break-continue` | `true` | Flag `break`/`continue` used outside a loop. |
+| `constdecl` | `true` | Flag invalid `const` declarations and redefinitions. |
+
+### Example
+
+```toml
+# julialint.toml
+
+# Surface syntax warnings in addition to errors
+syntax-warnings = true
+
+# Report every missing reference, not just identifiers
+missing-refs = "all"
+
+# Turn off a couple of noisy checks
+useoffuncargs = false
+literal = false
+```
+
 ## Exit codes
 
 | Code | Meaning |
