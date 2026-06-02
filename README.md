@@ -9,6 +9,17 @@ warnings, information, and hints — that help you catch problems before running
 your code. Diagnostics can be printed as human-readable text, or emitted as JSON
 or SARIF for integration with other tools and CI systems.
 
+## Installation
+
+`julialint` is distributed as a Julia app. Install it with the `app` command in the package REPL:
+
+```
+pkg> app add https://github.com/julia-vscode/JuliaLint.jl
+```
+
+This installs the `julialint` executable and makes it available on your
+`PATH`.
+
 ## Usage
 
 ```
