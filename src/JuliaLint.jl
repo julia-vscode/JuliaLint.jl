@@ -355,7 +355,6 @@ function (@main)(ARGS)
     parsed_args = parse_commandline(ARGS)
 
     # --- Logging ---
-    ENV["JULIA_LOAD_PATH"] = ";"
     log_level = parsed_args["log"]
     if log_level == "debug"
         global_logger(ConsoleLogger(stderr, Logging.Debug))
