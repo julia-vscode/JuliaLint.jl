@@ -447,4 +447,52 @@ function (@main)(ARGS)
     return 0
 end
 
+# ---------------------------------------------------------------------------
+# Precompile workload
+# ---------------------------------------------------------------------------
+
+using PrecompileTools: @setup_workload, @compile_workload
+
+@setup_workload begin
+    workload_dir = mktempdir()
+    write(joinpath(workload_dir, "script.jl"), """
+    function f(a)
+        unused = 1
+        return not_defined_xyz(a)
+    end
+    """)
+
+    @compile_workload begin
+        parse_commandline(String[])
+
+        # DynamicOff so no child processes are spawned during precompilation.
+        jw = JuliaWorkspaces.JuliaWorkspace(store_path=mktempdir())
+        JuliaWorkspaces.add_folder_from_disc!(jw, workload_dir)
+        all_diagnostics = get_diagnostics_blocking(jw)
+
+        entries = []
+        for (uri, diagnostics) in all_diagnostics
+            isempty(diagnostics) && continue
+            text_file = get_text_file(jw, uri)
+            abs_path = JuliaWorkspaces.uri2filepath(uri)
+            for diag in diagnostics
+                push!(entries, (abs_path, first(diag.range), diag, text_file))
+            end
+        end
+        sort!(entries, by=x -> (x[1], x[2]))
+
+        io = IOBuffer()
+        counts = Dict{Symbol,Int}()
+        for (_, _, diag, text_file) in entries
+            _print_diagnostic(io, diag, text_file, false)
+            _print_diagnostic(io, diag, text_file, true)
+            _print_diagnostic_verbose(io, diag, text_file, false)
+            counts[diag.severity] = get(counts, diag.severity, 0) + 1
+        end
+        _print_summary(io, counts)
+        _output_json(io, entries)
+        _output_sarif(io, entries, workload_dir)
+    end
+end
+
 end # module JuliaLint
