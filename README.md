@@ -155,3 +155,4 @@ literal = false
 | --- | --- |
 | `0` | Success; no errors (and, with `--max-warnings`, the warning limit was not exceeded). |
 | `1` | Errors were found, the warning limit was exceeded, or the given path is not a directory. |
+| `2` | `julialint` itself failed to analyze the project. Re-run with `--log debug` for the full stack trace. |

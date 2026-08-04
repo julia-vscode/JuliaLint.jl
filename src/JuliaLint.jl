@@ -2,10 +2,11 @@ module JuliaLint
 
 using JuliaWorkspaces, ArgParse, JSON, Logging
 
+# `pkgversion` reads the version baked into the loaded package, so this keeps
+# working for an installed app, where `../Project.toml` need not exist on disc.
 const _VERSION = let
-    proj = joinpath(dirname(@__DIR__), "Project.toml")
-    m = match(r"^version\s*=\s*\"([^\"]+)\""m, read(proj, String))
-    m === nothing ? "0.0.0" : String(m[1])
+    v = pkgversion(@__MODULE__)
+    v === nothing ? "0.0.0" : string(v)
 end
 
 const _SEVERITY_COLORS = Dict{Symbol,String}(
@@ -289,7 +290,13 @@ end
 
 function parse_commandline(ARGS)
     s = ArgParseSettings(
+        # Without `prog`, ArgParse falls back to `basename(Base.source_path())`,
+        # which is empty under an app launch, and the usage line prints the
+        # literal `<PROGRAM>` placeholder.
+        prog = "julialint",
         description = "JuliaLint — a static analysis tool for Julia code",
+        version = _VERSION,
+        add_version = true,
     )
 
     @add_arg_table! s begin
@@ -351,6 +358,32 @@ end
 # Main entry point
 # ---------------------------------------------------------------------------
 
+# Peel the wrappers the analysis engine adds on the way out — Salsa's
+# `DerivedFunctionException` (whose `showerror` appends a multi-line Salsa
+# trace) and `TaskFailedException` — so the user-facing line names the actual
+# cause. Matched structurally rather than by type, since JuliaLint depends on
+# neither Salsa nor the internals that throw these.
+function _unwrap_error(err)
+    for _ in 1:8
+        if hasproperty(err, :captured_exception)
+            err = getproperty(err, :captured_exception)
+        elseif err isa TaskFailedException
+            err = err.task.result
+        elseif err isa CompositeException && !isempty(err.exceptions)
+            err = first(err.exceptions)
+        else
+            break
+        end
+    end
+    return err
+end
+
+# A single line naming the cause, for the top-level failure report.
+function _brief_error(err)
+    msg = sprint(showerror, _unwrap_error(err))
+    return String(first(eachsplit(msg, '\n')))
+end
+
 function (@main)(ARGS)
     parsed_args = parse_commandline(ARGS)
 
@@ -381,8 +414,22 @@ function (@main)(ARGS)
     out_file  = parsed_args["output-file"]
 
     # --- Lint ---
-    jw = workspace_from_folders([target_path], dynamic=JuliaWorkspaces.DynamicIndexingOnly, symbolcache_download=true)
-    all_diagnostics = get_diagnostics_blocking(jw)
+    # Anything the analysis engine throws (a corrupt symbol cache, a child
+    # process dying, an internal error) is reported as a tool failure rather
+    # than an uncaught-exception dump: exit code 2, distinct from 1 ("lint
+    # findings"). The raw exception stays available under `--log debug`.
+    local jw, all_diagnostics
+    try
+        jw = workspace_from_folders([target_path], dynamic=JuliaWorkspaces.DynamicIndexingOnly, symbolcache_download=true)
+        all_diagnostics = get_diagnostics_blocking(jw)
+    catch err
+        err isa InterruptException && rethrow()
+        @debug "Analysis failed" target_path exception=(err, catch_backtrace())
+        printstyled(stderr, "error", color=:red, bold=true)
+        println(stderr, ": julialint failed to analyze ", target_path, ": ", _brief_error(err))
+        println(stderr, "       run with --log debug for the full stack trace")
+        return 2
+    end
 
     # --- Collect & sort entries ---
     entries = []
