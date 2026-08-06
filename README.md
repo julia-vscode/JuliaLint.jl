@@ -107,10 +107,17 @@ take their built-in defaults, never a value from a file further up the tree.
 This means you can always determine a directory's effective configuration by
 reading exactly one file.
 
+Because a nested config *replaces* rather than extends the one above it — which
+would otherwise happen silently — a config file with another of the same kind in
+an enclosing directory reports a `shadowed_config` warning naming the file it
+takes over from. Projects that genuinely want independent subtrees set
+`shadowed_config = "off"`.
+
 ### Top-level keys
 
 | Key | Default | Description |
 | --- | --- | --- |
+| `config-version` | `1` | The config format version. Absent means `1`. |
 | `preset` | `"default"` | The severity baseline: `"minimal"`, `"default"`, or `"strict"`. |
 | `include` | all `.jl` files | Glob patterns selecting the files to lint. |
 | `exclude` | none | Glob patterns excluding files from linting. Wins over `include`. |
@@ -128,6 +135,12 @@ character, and a pattern with no `/` matches at any depth.
 | `minimal` | Only outright breakage: syntax, test item, TOML and config errors, plus include-graph and `const` problems. |
 | `default` | The out-of-the-box behavior. |
 | `strict` | Every rule on, with hints and informational findings promoted to warnings. |
+
+A preset name **floats** — it tracks the tool rather than pinning a frozen rule
+set, so upgrading `julialint` can change what a preset reports. To keep that
+from breaking projects, a rule that did not exist before enters existing presets
+as `"off"`; promoting it is a deliberate, changelogged change. Version-pinning
+syntax may be added later, and bare names will keep floating.
 
 ### Rules
 
@@ -152,6 +165,7 @@ reports as a diagnostic code, and what `--format sarif` emits as the SARIF
 | `testitem_errors` | `error` | Errors in `@testitem` blocks. |
 | `toml_syntax_errors` | `error` | TOML syntax errors in config, `Project.toml` and `Manifest.toml` files. |
 | `config_errors` | `error` | Invalid keys or values in a `JuliaLint.toml`, `JuliaFormat.toml` or `JuliaTestItems.toml` file. |
+| `shadowed_config` | `warning` | A config file that supersedes another of the same kind in an enclosing directory (see below). |
 | `incorrect_call_args` | `info` | Possible method call errors (wrong number/type of arguments), and calls to functions with no methods. |
 | `incorrect_iter_spec` | `info` | Loop iterators that will likely error. |
 | `index_from_length` | `info` | Indexing with indices from `length`/`size`; prefer `eachindex`/`axes`. |
