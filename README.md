@@ -107,11 +107,17 @@ take their built-in defaults, never a value from a file further up the tree.
 This means you can always determine a directory's effective configuration by
 reading exactly one file.
 
+A single `JuliaLint.toml` at the project root should be your default. When part
+of the tree needs different settings, use an `[[override]]` block in that one
+file rather than a second config file — a nested file is a last resort, for a
+subtree that is genuinely independent of the project, such as a vendored
+repository.
+
 Because a nested config *replaces* rather than extends the one above it — which
 would otherwise happen silently — a config file with another of the same kind in
-an enclosing directory reports a `shadowed_config` warning naming the file it
-takes over from. Projects that genuinely want independent subtrees set
-`shadowed_config = "off"`.
+an enclosing directory reports a `shadowed_config` diagnostic (`info` severity
+by default) naming the file it takes over from. Projects that genuinely want
+independent subtrees set `shadowed_config = "off"`.
 
 ### Top-level keys
 
@@ -165,7 +171,7 @@ reports as a diagnostic code, and what `--format sarif` emits as the SARIF
 | `testitem_errors` | `error` | Errors in `@testitem` blocks. |
 | `toml_syntax_errors` | `error` | TOML syntax errors in config, `Project.toml` and `Manifest.toml` files. |
 | `config_errors` | `error` | Invalid keys or values in a `JuliaLint.toml`, `JuliaFormat.toml` or `JuliaTestItems.toml` file. |
-| `shadowed_config` | `warning` | A config file that supersedes another of the same kind in an enclosing directory (see below). |
+| `shadowed_config` | `info` | A config file that supersedes another of the same kind in an enclosing directory (see below). |
 | `incorrect_call_args` | `info` | Possible method call errors (wrong number/type of arguments), and calls to functions with no methods. |
 | `incorrect_iter_spec` | `info` | Loop iterators that will likely error. |
 | `index_from_length` | `info` | Indexing with indices from `length`/`size`; prefer `eachindex`/`axes`. |
