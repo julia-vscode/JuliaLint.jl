@@ -80,74 +80,162 @@ julialint --format sarif -o results.sarif src/
 | `json` | Structured diagnostics grouped by file, suitable for further processing. |
 | `sarif` | SARIF v2.1.0 output compatible with GitHub Code Scanning and other SARIF consumers. |
 
+Every format reports the **rule id** of each finding — in brackets in `text`
+output, as the `rule` field in `json`, and as the SARIF `ruleId`. That id is
+what you write in `JuliaLint.toml` to change or silence the rule, and what
+GitHub Code Scanning keys per-rule suppressions on:
+
+```
+src/MyPackage.jl:5:5: error: Variable has been assigned but not used. [unused_binding]
+```
+
 ## Configuration
 
 > [!WARNING]
-> The `julialint.toml` configuration format is **experimental**. The available
+> The `JuliaLint.toml` configuration format is **experimental**. The available
 > keys, their values, and default behavior may change in any release without
 > notice.
 
-Linting behavior can be customized with a `julialint.toml` file (the name is
-matched case-insensitively, so `JuliaLint.toml` also works). Place the file in
-your project; it applies to all Julia files in that directory and its
-subdirectories.
+Linting behavior is customized with a `JuliaLint.toml` file (the name is matched
+case-insensitively). Place it in your project; it applies to all Julia files in
+that directory and its subdirectories.
 
-Configuration is hierarchical: when several `julialint.toml` files exist along a
-file's path, they are merged with deeper (more specific) files overriding
-shallower ones on a per-key basis.
+**The nearest configuration file governs a file wholesale.** When several
+`JuliaLint.toml` files exist along a path, only the closest one applies —
+settings are *not* merged across files. Keys the governing file does not set
+take their built-in defaults, never a value from a file further up the tree.
+This means you can always determine a directory's effective configuration by
+reading exactly one file.
 
-Every option is a boolean (`true`/`false`) unless noted otherwise. All checks
-are enabled by default except `syntax-warnings`.
-
-### Diagnostic categories
-
-| Key | Default | Description |
-| --- | --- | --- |
-| `syntax-errors` | `true` | Report Julia syntax errors. |
-| `syntax-warnings` | `false` | Report Julia syntax warnings. |
-| `testitem-errors` | `true` | Report errors in `@testitem` blocks. |
-| `toml-syntax-errors` | `true` | Report TOML syntax errors in config, `Project.toml`, and `Manifest.toml` files. |
-| `lint-config-errors` | `true` | Report invalid keys or values in the `julialint.toml` file itself. |
-| `format-config-errors` | `true` | Report errors in formatter configuration files. |
-| `static-lint` | `true` | Master switch for all StaticLint semantic checks below. Set to `false` to disable them all at once. |
-| `missing-refs` | `"symbols"` | Control reporting of missing references. One of `"none"` (off), `"symbols"` (identifiers only), or `"all"`. |
-
-### StaticLint checks
-
-These checks apply only when `static-lint` is enabled.
+### Top-level keys
 
 | Key | Default | Description |
 | --- | --- | --- |
-| `call` | `true` | Flag possible method call errors (wrong number/type of arguments). |
-| `iter` | `true` | Flag loop iterators that will likely error. |
-| `nothingcomp` | `true` | Flag comparisons against `nothing` that should use `isnothing`/`===`. |
-| `constif` | `true` | Flag boolean literals used as an `if` condition (always or never runs). |
-| `lazy` | `true` | Flag `&&`/`||` whose first argument is a boolean literal. |
-| `datadecl` | `true` | Flag non-`DataType` values used in a type declaration. |
-| `typeparam` | `true` | Flag type parameters that are declared but never used. |
-| `modname` | `true` | Flag a module whose name matches that of its parent. |
-| `pirates` | `true` | Flag type piracy (extending imported functions without an owned type). |
-| `useoffuncargs` | `true` | Flag function arguments that are declared but never used. |
-| `kwdefault` | `true` | Flag keyword default values that don't match the argument type. |
-| `literal` | `true` | Flag inappropriate use of literal values. |
-| `break-continue` | `true` | Flag `break`/`continue` used outside a loop. |
-| `constdecl` | `true` | Flag invalid `const` declarations and redefinitions. |
+| `preset` | `"default"` | The severity baseline: `"minimal"`, `"default"`, or `"strict"`. |
+| `include` | all `.jl` files | Glob patterns selecting the files to lint. |
+| `exclude` | none | Glob patterns excluding files from linting. Wins over `include`. |
+| `[rules]` | — | Per-rule severity and options, applied on top of the preset. |
+| `[[override]]` | — | Re-scope a subset of the settings to matching paths. |
+
+Globs are gitignore-style, relative to the directory holding the config file:
+`*` matches within a path segment, `**` spans segments, `?` matches a single
+character, and a pattern with no `/` matches at any depth.
+
+### Presets
+
+| Preset | Description |
+| --- | --- |
+| `minimal` | Only outright breakage: syntax, test item, TOML and config errors, plus include-graph and `const` problems. |
+| `default` | The out-of-the-box behavior. |
+| `strict` | Every rule on, with hints and informational findings promoted to warnings. |
+
+### Rules
+
+Each entry under `[rules]` maps a rule id to a severity — one of `"off"`,
+`"hint"`, `"info"`, `"warning"` or `"error"`. A rule that takes options is
+written as a table instead, with the severity under the reserved `severity` key:
+
+```toml
+[rules]
+unused_binding = "warning"
+missing_reference = { severity = "warning", scope = "symbols" }
+```
+
+Rule ids are stable: they are what you write here, what the language server
+reports as a diagnostic code, and what `--format sarif` emits as the SARIF
+`ruleId` (so per-rule suppression in GitHub Code Scanning works).
+
+| Rule | Default | Description |
+| --- | --- | --- |
+| `syntax_errors` | `error` | Julia syntax errors. |
+| `syntax_warnings` | `off` | Julia syntax warnings. |
+| `testitem_errors` | `error` | Errors in `@testitem` blocks. |
+| `toml_syntax_errors` | `error` | TOML syntax errors in config, `Project.toml` and `Manifest.toml` files. |
+| `config_errors` | `error` | Invalid keys or values in a `JuliaLint.toml`, `JuliaFormat.toml` or `JuliaTestItems.toml` file. |
+| `incorrect_call_args` | `info` | Possible method call errors (wrong number/type of arguments), and calls to functions with no methods. |
+| `incorrect_iter_spec` | `info` | Loop iterators that will likely error. |
+| `index_from_length` | `info` | Indexing with indices from `length`/`size`; prefer `eachindex`/`axes`. |
+| `nothing_comparison` | `info` | Comparisons against `nothing` that should use `isnothing`/`===`. |
+| `const_if_condition` | `info` | Boolean literals and unbracketed assignment used as an `if` condition. |
+| `pointless_boolean` | `info` | `&&`/`\|\|` whose first argument is a boolean literal. |
+| `invalid_type_declaration` | `info` | Non-`DataType` values used in a type declaration. |
+| `unused_type_parameter` | `hint` | Type parameters declared but never used. |
+| `module_name` | `info` | A module whose name matches that of its parent. |
+| `type_piracy` | `info` | Type piracy, and overloading `!=` instead of `==`. |
+| `unused_function_argument` | `hint` | Function arguments declared but never used. |
+| `duplicate_function_argument` | `info` | Repeated argument names in a signature. |
+| `kw_default_mismatch` | `info` | Keyword default values that don't match the argument type. |
+| `literal_use` | `info` | Inappropriate use of literal values. |
+| `break_continue` | `info` | `break`/`continue` used outside a loop. |
+| `global_const_decl` | `info` | Type declarations on globals and `const` on locals. |
+| `const_decl` | `info` | Invalid `const` declarations and redefinitions. |
+| `unused_binding` | `hint` | Variables assigned but never used. |
+| `relative_import` | `info` | A relative import with more leading dots than available nesting. |
+| `include_errors` | `warning` | Circular, duplicate, missing or unreadable `include`s. |
+| `missing_reference` | `warning` | Unresolved references. Takes a `scope` option: `"none"`, `"symbols"` (identifiers only) or `"all"` (the default). |
+| `unresolved_import` | `warning` | Imports whose target could not be resolved. |
+
+### Overrides
+
+An `[[override]]` block re-scopes any subset of the settings to the paths its
+`paths` globs match. Later blocks win over earlier ones.
+
+```toml
+[[override]]
+paths = ["test/**"]
+
+[override.rules]
+unused_binding = "off"
+```
 
 ### Example
 
 ```toml
-# julialint.toml
+# JuliaLint.toml
 
+preset = "default"
+exclude = ["gen/**"]
+
+[rules]
 # Surface syntax warnings in addition to errors
-syntax-warnings = true
+syntax_warnings = "warning"
 
 # Report every missing reference, not just identifiers
-missing-refs = "all"
+missing_reference = { severity = "warning", scope = "all" }
 
 # Turn off a couple of noisy checks
-useoffuncargs = false
-literal = false
+unused_function_argument = "off"
+literal_use = "off"
+
+# Fail CI on anything comparing against `nothing` with `==`
+nothing_comparison = "error"
+
+# Tests are noisier by nature
+[[override]]
+paths = ["test/**"]
+
+[override.rules]
+unused_binding = "off"
 ```
+
+### Migrating from the old format
+
+The earlier flat schema (`static-lint`, `nothingcomp`, `missing-refs`,
+`break-continue`, …) is no longer honored. An existing config file is not
+silently ignored: each old key produces a diagnostic on the config file naming
+its replacement, so `julialint` on your own project tells you what to change.
+
+Note that a project which relied on `static-lint = false` will start reporting
+lint diagnostics again until its config is migrated — use `preset = "minimal"`
+for the closest equivalent.
+
+### Full reference
+
+This page covers what `julialint` needs. For the complete specification —
+the discovery and override mechanism shared with `JuliaFormat.toml` and
+`JuliaTestItems.toml`, the glob grammar, and how rules map onto the analysis
+internally — see the
+[JuliaWorkspaces configuration reference](https://www.julia-vscode.org/JuliaWorkspaces.jl/dev/configuration/).
 
 ## Exit codes
 
