@@ -61,8 +61,11 @@ function _print_diagnostic(io::IO, diag, text_file, use_color::Bool)
 
     print(io, ": ", diag.message)
 
-    if !isempty(diag.source)
-        print(io, " [", diag.source, "]")
+    # The rule id is what a user writes in `JuliaLint.toml` to configure or
+    # silence this finding, so it is the more useful thing to show.
+    rule = _rule_id(diag)
+    if !isempty(rule)
+        print(io, " [", rule, "]")
     end
 
     println(io)
@@ -138,12 +141,13 @@ function _print_diagnostic_verbose(io::IO, diag, text_file, use_color::Bool)
     _print_gutter(io, gutter_w, nothing, use_color)
     println(io)
 
-    # --- Source attribution ---
-    if !isempty(diag.source)
+    # --- Rule attribution ---
+    rule = _rule_id(diag)
+    if !isempty(rule)
         if use_color
-            println(io, " "^(gutter_w + 1), _BLUE, "= ", _RESET, "source: ", diag.source)
+            println(io, " "^(gutter_w + 1), _BLUE, "= ", _RESET, "rule: ", rule)
         else
-            println(io, " "^(gutter_w + 1), "= ", "source: ", diag.source)
+            println(io, " "^(gutter_w + 1), "= ", "rule: ", rule)
         end
     end
 
@@ -170,6 +174,10 @@ end
 # JSON output
 # ---------------------------------------------------------------------------
 
+# The stable rule id, as named in `JuliaLint.toml`. Diagnostics from analyses
+# that predate rule ids fall back to their source.
+_rule_id(diag) = diag.code === nothing ? diag.source : string(diag.code)
+
 function _diagnostic_to_dict(diag, text_file)
     st = text_file.content
     start_pos = position_at(st, first(diag.range))
@@ -185,6 +193,7 @@ function _diagnostic_to_dict(diag, text_file)
         "severity"    => string(diag.severity),
         "message"     => diag.message,
         "source"      => diag.source,
+        "rule"        => _rule_id(diag),
         "tags"        => [string(t) for t in diag.tags],
     )
 end
@@ -234,7 +243,7 @@ function _output_sarif(io::IO, entries, root_path::String)
         rel_path = replace(rel_path, '\\' => '/')
 
         sarif_result = Dict{String,Any}(
-            "ruleId"  => diag.source,
+            "ruleId"  => _rule_id(diag),
             "level"   => get(_SARIF_SEVERITY_MAP, diag.severity, "note"),
             "message" => Dict{String,Any}("text" => diag.message),
             "locations" => [
