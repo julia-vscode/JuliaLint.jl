@@ -1,4 +1,4 @@
-module JuliaLint
+module JuliaLintApp
 
 using JuliaWorkspaces, ArgParse, JSON, Logging
 
@@ -274,9 +274,9 @@ function _output_sarif(io::IO, entries, root_path::String)
             Dict{String,Any}(
                 "tool" => Dict{String,Any}(
                     "driver" => Dict{String,Any}(
-                        "name"           => "JuliaLint",
+                        "name"           => "julialint",
                         "version"        => _VERSION,
-                        "informationUri" => "https://github.com/julia-vscode/JuliaLint.jl",
+                        "informationUri" => "https://github.com/julia-vscode/JuliaLintApp.jl",
                     ),
                 ),
                 "originalUriBaseIds" => Dict{String,Any}(
@@ -303,7 +303,7 @@ function parse_commandline(ARGS)
         # which is empty under an app launch, and the usage line prints the
         # literal `<PROGRAM>` placeholder.
         prog = "julialint",
-        description = "JuliaLint — a static analysis tool for Julia code",
+        description = "julialint — a static analysis tool for Julia code",
         version = _VERSION,
         add_version = true,
     )
@@ -370,7 +370,7 @@ end
 # Peel the wrappers the analysis engine adds on the way out — Salsa's
 # `DerivedFunctionException` (whose `showerror` appends a multi-line Salsa
 # trace) and `TaskFailedException` — so the user-facing line names the actual
-# cause. Matched structurally rather than by type, since JuliaLint depends on
+# cause. Matched structurally rather than by type, since JuliaLintApp depends on
 # neither Salsa nor the internals that throw these.
 function _unwrap_error(err)
     for _ in 1:8
@@ -551,4 +551,4 @@ using PrecompileTools: @setup_workload, @compile_workload
     end
 end
 
-end # module JuliaLint
+end # module JuliaLintApp

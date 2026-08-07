@@ -1,13 +1,13 @@
-# JuliaLint.jl
+# JuliaLintApp.jl
 
 > [!WARNING]
-> **JuliaLint is beta software.** It is still under active development, may be
+> **JuliaLintApp is beta software.** It is still under active development, may be
 > unstable, and everything described here — including commands, options, output,
 > and the configuration format — is subject to change without notice.
 
 `julialint` is a command line static analysis tool for Julia. It exposes the
 linting capabilities of [JuliaWorkspaces.jl](https://github.com/julia-vscode/JuliaWorkspaces.jl)
-as a standalone app, and is a companion to [JuliaFormat.jl](https://github.com/julia-vscode/JuliaFormat.jl).
+as a standalone app, and is a companion to [JuliaFormatApp.jl](https://github.com/julia-vscode/JuliaFormatApp.jl).
 
 `julialint` analyzes Julia source files and reports diagnostics — errors,
 warnings, information, and hints — that help you catch problems before running
@@ -19,7 +19,7 @@ or SARIF for integration with other tools and CI systems.
 `julialint` is distributed as a Julia app. Install it with the `app` command in the package REPL:
 
 ```
-pkg> app add https://github.com/julia-vscode/JuliaLint.jl
+pkg> app add https://github.com/julia-vscode/JuliaLintApp.jl
 ```
 
 This installs the `julialint` executable and makes it available on your
