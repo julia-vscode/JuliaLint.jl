@@ -548,6 +548,24 @@ using PrecompileTools: @setup_workload, @compile_workload
         _print_summary(io, counts)
         _output_json(io, entries)
         _output_sarif(io, entries, workload_dir)
+
+        # The app's real path runs a dynamic workspace; repeat the diagnostics
+        # run through workspace_from_folders with dynamic indexing so the
+        # app-side specializations of that path land in this pkgimage. A plain
+        # scripts folder requires no environment indexing, so no child Julia
+        # processes are spawned during precompilation. symbolcache_download
+        # must stay off here (no network during precompile).
+        Logging.with_logger(Logging.NullLogger()) do
+            jw2 = workspace_from_folders([workload_dir];
+                dynamic=JuliaWorkspaces.DynamicIndexingOnly,
+                symbolcache_download=false,
+                store_path=mktempdir())
+            get_diagnostics_blocking(jw2)
+            put!(jw2.dynamic_feature.in_channel, JuliaWorkspaces.ShutdownMsg())
+            while JuliaWorkspaces.state(jw2.dynamic_feature.controller_fsm) != JuliaWorkspaces.DynamicControllerStopped
+                yield()
+            end
+        end
     end
 end
 
