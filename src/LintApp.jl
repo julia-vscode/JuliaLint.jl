@@ -1,4 +1,4 @@
-module JuliaLintApp
+module LintApp
 
 using JuliaWorkspaces, ArgParse, JSON, Logging
 
@@ -276,7 +276,7 @@ function _output_sarif(io::IO, entries, root_path::String)
                     "driver" => Dict{String,Any}(
                         "name"           => "julialint",
                         "version"        => _VERSION,
-                        "informationUri" => "https://github.com/julia-vscode/JuliaLintApp.jl",
+                        "informationUri" => "https://github.com/julia-vscode/LintApp.jl",
                     ),
                 ),
                 "originalUriBaseIds" => Dict{String,Any}(
@@ -370,7 +370,7 @@ end
 # Peel the wrappers the analysis engine adds on the way out — Salsa's
 # `DerivedFunctionException` (whose `showerror` appends a multi-line Salsa
 # trace) and `TaskFailedException` — so the user-facing line names the actual
-# cause. Matched structurally rather than by type, since JuliaLintApp depends on
+# cause. Matched structurally rather than by type, since LintApp depends on
 # neither Salsa nor the internals that throw these.
 function _unwrap_error(err)
     for _ in 1:8
@@ -569,4 +569,4 @@ using PrecompileTools: @setup_workload, @compile_workload
     end
 end
 
-end # module JuliaLintApp
+end # module LintApp

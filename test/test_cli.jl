@@ -1,5 +1,5 @@
 @testitem "parse_commandline defaults" begin
-    parsed = JuliaLintApp.parse_commandline(String[])
+    parsed = LintApp.parse_commandline(String[])
     @test parsed["path"] == ""
     @test parsed["format"] == "text"
     @test parsed["verbose"] == false

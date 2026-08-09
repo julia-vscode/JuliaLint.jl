@@ -1,14 +1,14 @@
 @testmodule CLIHelper begin
-    using JuliaLintApp
+    using LintApp
 
-    # Run JuliaLintApp.main with captured stdout/stderr, returning
+    # Run LintApp.main with captured stdout/stderr, returning
     # (exit_code, stdout::String, stderr::String).
     function run_cli(args::Vector{String})
         out_path, out_io = mktemp()
         err_path, err_io = mktemp()
         local code
         try
-            code = redirect_stdio(() -> JuliaLintApp.main(args); stdout=out_io, stderr=err_io)
+            code = redirect_stdio(() -> LintApp.main(args); stdout=out_io, stderr=err_io)
         finally
             close(out_io)
             close(err_io)
