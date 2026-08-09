@@ -340,6 +340,9 @@ function parse_commandline(ARGS)
             help = "write output to a file instead of stdout"
             arg_type = String
             metavar = "FILE"
+        "--no-progress"
+            help = "disable progress output on stderr"
+            action = :store_true
     end
 
     return parse_args(ARGS, s)
@@ -361,6 +364,138 @@ function _print_summary(io::IO, counts::Dict{Symbol,Int})
         println(io)
         println(io, join(parts, ", "))
     end
+end
+
+# ---------------------------------------------------------------------------
+# Progress reporting (stderr)
+# ---------------------------------------------------------------------------
+
+# Progress goes to stderr so it never mixes with results on stdout (or -o).
+# Two render modes: `live` rewrites a single status line in place (stderr is a
+# TTY); otherwise plain lines are printed — one per phase transition plus
+# throttled count updates — so CI logs show liveness without flooding.
+#
+# Updates arrive from two sources: the JuliaWorkspaces progress callback
+# (phase-prefixed keys like "index:<env>", fired on the dynamic-feature reactor
+# task) and the per-file lint callback (fired on the main task); the lock makes
+# the shared state and interleaved stderr writes safe. Key-aggregation
+# semantics follow LanguageServer's progress bars: a key is active from its
+# first sub-100 report, a report >= 100 completes it, and a terminal report for
+# a never-seen key is a no-op.
+mutable struct ProgressReporter
+    io::IO
+    live::Bool
+    lock::ReentrantLock
+    phase_active::Dict{String,Dict{String,Int}}  # phase -> (active key -> latest pct)
+    phase_seen::Dict{String,Set{String}}         # phase -> every key ever active
+    phase_done::Dict{String,Int}                 # phase -> completed key count
+    lint_done::Int
+    lint_total::Int
+    last_render::Float64
+    last_line::String
+    t0::Float64
+end
+
+ProgressReporter(io::IO, live::Bool) = ProgressReporter(
+    io, live, ReentrantLock(),
+    Dict{String,Dict{String,Int}}(), Dict{String,Set{String}}(), Dict{String,Int}(),
+    0, 0, 0.0, "", time())
+
+# Phase = key prefix before ':' (index/download/refresh), else the whole key.
+function _progress_phase(key::String)
+    i = findfirst(==(':'), key)
+    return i === nothing ? key : key[1:prevind(key, i)]
+end
+
+function _report_jw!(pr::ProgressReporter, key::String, ::String, pct::Int)
+    lock(pr.lock) do
+        phase = _progress_phase(key)
+        active = get!(Dict{String,Int}, pr.phase_active, phase)
+        if pct >= 100
+            haskey(active, key) || return
+            delete!(active, key)
+            pr.phase_done[phase] = get(pr.phase_done, phase, 0) + 1
+        else
+            push!(get!(Set{String}, pr.phase_seen, phase), key)
+            active[key] = pct
+        end
+        _maybe_render!(pr)
+    end
+    return nothing
+end
+
+function _report_lint!(pr::ProgressReporter, done::Int, total::Int)
+    lock(pr.lock) do
+        pr.lint_done = done
+        pr.lint_total = total
+        _maybe_render!(pr)
+    end
+    return nothing
+end
+
+# The most user-meaningful thing currently in flight. Linting wins while it is
+# underway; between lint rounds the environment phases take over again.
+function _current_label(pr::ProgressReporter)
+    if pr.lint_total > 0 && pr.lint_done < pr.lint_total
+        return "Linting files ($(pr.lint_done)/$(pr.lint_total))"
+    end
+    for (phase, name) in (("index", "Indexing environments"),
+                          ("download", "Downloading symbol caches"),
+                          ("refresh", "Refreshing environments"))
+        active = get(pr.phase_active, phase, nothing)
+        (active === nothing || isempty(active)) && continue
+        done = get(pr.phase_done, phase, 0)
+        total = length(pr.phase_seen[phase])
+        return "$name ($done/$total)"
+    end
+    isempty(get(pr.phase_active, "package-caches", Dict{String,Int}())) || return "Loading package caches"
+    isempty(get(pr.phase_active, "bootstrap", Dict{String,Int}())) || return "Preparing analysis environment"
+    return ""
+end
+
+# Label up to the "(k/n)" counter, for phase-transition detection.
+_label_head(s::AbstractString) = String(first(split(s, " (")))
+
+# Caller must hold pr.lock.
+function _maybe_render!(pr::ProgressReporter)
+    label = _current_label(pr)
+    (isempty(label) || label == pr.last_line) && return
+    now = time()
+    # Phase transitions always render so short phases still show up; within a
+    # phase, count updates are throttled (tight for a live line, coarse for
+    # scrolling plain lines).
+    if _label_head(label) == _label_head(pr.last_line)
+        min_dt = pr.live ? 0.1 : 5.0
+        now - pr.last_render < min_dt && return
+    end
+    if pr.live
+        print(pr.io, "\r\e[2K", label)
+    else
+        println(pr.io, label)
+    end
+    flush(pr.io)
+    pr.last_render = now
+    pr.last_line = label
+    return
+end
+
+# Clear the live status line (before error output or the final summary).
+function _clear_progress!(pr::ProgressReporter)
+    lock(pr.lock) do
+        if pr.live && !isempty(pr.last_line)
+            print(pr.io, "\r\e[2K")
+            flush(pr.io)
+        end
+        pr.last_line = ""
+    end
+    return nothing
+end
+
+function _finish_progress!(pr::ProgressReporter, nfiles::Int)
+    _clear_progress!(pr)
+    println(pr.io, "Analyzed $nfiles files in $(round(time() - pr.t0, digits=1))s")
+    flush(pr.io)
+    return nothing
 end
 
 # ---------------------------------------------------------------------------
@@ -422,6 +557,16 @@ function (@main)(ARGS)
     max_warn  = parsed_args["max-warnings"]::Int
     out_file  = parsed_args["output-file"]
 
+    # --- Progress reporting ---
+    # Live single-line rendering only on a TTY and only when the ConsoleLogger
+    # stays at Warn: with --log debug/info, log records share stderr and would
+    # clobber a rewritten line, so fall back to plain progress lines.
+    pr = if parsed_args["no-progress"]::Bool
+        nothing
+    else
+        ProgressReporter(stderr, stderr isa Base.TTY && log_level === nothing)
+    end
+
     # --- Lint ---
     # Anything the analysis engine throws (a corrupt symbol cache, a child
     # process dying, an internal error) is reported as a tool failure rather
@@ -429,10 +574,16 @@ function (@main)(ARGS)
     # findings"). The raw exception stays available under `--log debug`.
     local jw, all_diagnostics
     try
-        jw = workspace_from_folders([target_path], dynamic=JuliaWorkspaces.DynamicIndexingOnly, symbolcache_download=true)
-        all_diagnostics = get_diagnostics_blocking(jw)
+        jw = workspace_from_folders([target_path],
+            dynamic=JuliaWorkspaces.DynamicIndexingOnly,
+            symbolcache_download=true,
+            progress_callback=pr === nothing ? nothing : (key, msg, pct) -> _report_jw!(pr, key, msg, pct))
+        all_diagnostics = get_diagnostics_blocking(jw,
+            progress_callback=pr === nothing ? nothing : (done, total) -> _report_lint!(pr, done, total))
+        pr === nothing || _finish_progress!(pr, length(all_diagnostics))
     catch err
         err isa InterruptException && rethrow()
+        pr === nothing || _clear_progress!(pr)
         @debug "Analysis failed" target_path exception=(err, catch_backtrace())
         printstyled(stderr, "error", color=:red, bold=true)
         println(stderr, ": julialint failed to analyze ", target_path, ": ", _brief_error(err))
@@ -556,11 +707,17 @@ using PrecompileTools: @setup_workload, @compile_workload
         # processes are spawned during precompilation. symbolcache_download
         # must stay off here (no network during precompile).
         Logging.with_logger(Logging.NullLogger()) do
+            # Exercise the progress path too, into a throwaway buffer, so its
+            # specializations land in the pkgimage.
+            pr = ProgressReporter(IOBuffer(), false)
             jw2 = workspace_from_folders([workload_dir];
                 dynamic=JuliaWorkspaces.DynamicIndexingOnly,
                 symbolcache_download=false,
-                store_path=mktempdir())
-            get_diagnostics_blocking(jw2)
+                store_path=mktempdir(),
+                progress_callback=(key, msg, pct) -> _report_jw!(pr, key, msg, pct))
+            get_diagnostics_blocking(jw2,
+                progress_callback=(done, total) -> _report_lint!(pr, done, total))
+            _finish_progress!(pr, 1)
             put!(jw2.dynamic_feature.in_channel, JuliaWorkspaces.ShutdownMsg())
             while JuliaWorkspaces.state(jw2.dynamic_feature.controller_fsm) != JuliaWorkspaces.DynamicControllerStopped
                 yield()
