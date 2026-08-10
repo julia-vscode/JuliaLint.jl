@@ -499,6 +499,75 @@ function _finish_progress!(pr::ProgressReporter, nfiles::Int)
 end
 
 # ---------------------------------------------------------------------------
+# Warning collection
+# ---------------------------------------------------------------------------
+
+# Buffers `Warn`-and-above log records emitted during the analysis run —
+# the engine's environment/indexing warnings would otherwise print raw,
+# interleaved with the progress output. Drained after the run into a
+# "Workspace warnings" block. The analysis engine logs from concurrently
+# scheduled tasks, hence the lock.
+struct CollectingLogger <: Logging.AbstractLogger
+    lock::ReentrantLock
+    messages::Vector{String}
+end
+CollectingLogger() = CollectingLogger(ReentrantLock(), String[])
+
+Logging.min_enabled_level(::CollectingLogger) = Logging.Warn
+Logging.shouldlog(::CollectingLogger, level, _module, group, id) = true
+Logging.catch_exceptions(::CollectingLogger) = true
+
+# Keyword payloads (`@warn "..." key`) carry the context of a record, but a
+# value can be arbitrarily large (an exception with backtrace), so cap it.
+function _render_log_value(v)
+    s = sprint(show, v)
+    return length(s) > 200 ? string(first(s, 200), "…") : s
+end
+
+function Logging.handle_message(logger::CollectingLogger, level, message, _module, group, id, file, line; kwargs...)
+    msg = string(message)
+    if !isempty(kwargs)
+        msg = string(msg, " (", join(("$k = $(_render_log_value(v))" for (k, v) in kwargs), ", "), ")")
+    end
+    lock(logger.lock) do
+        push!(logger.messages, msg)
+    end
+    return nothing
+end
+
+_drain_warnings!(logger::CollectingLogger) = lock(logger.lock) do
+    msgs = copy(logger.messages)
+    empty!(logger.messages)
+    msgs
+end
+_drain_warnings!(::Nothing) = String[]
+
+# Deduplicated (order-preserving, with a repeat count) block on stderr, after
+# the progress output is done and before the findings are written.
+function _print_workspace_warnings(io, msgs, use_color)
+    isempty(msgs) && return
+    counts = Dict{String,Int}()
+    order = String[]
+    for m in msgs
+        haskey(counts, m) || push!(order, m)
+        counts[m] = get(counts, m, 0) + 1
+    end
+    println(io)
+    if use_color
+        println(io, _BOLD, "Workspace warnings:", _RESET)
+    else
+        println(io, "Workspace warnings:")
+    end
+    for m in order
+        n = counts[m]
+        suffix = n > 1 ? " (×$n)" : ""
+        println(io, "  ", m, suffix)
+    end
+    flush(io)
+    return
+end
+
+# ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 
@@ -532,13 +601,19 @@ function (@main)(ARGS)
     parsed_args = parse_commandline(ARGS)
 
     # --- Logging ---
+    # With an explicit --log level the user asked for live log output; without
+    # one, warnings are buffered by a CollectingLogger and reported as a
+    # "Workspace warnings" block after the run instead of interleaving with
+    # the progress output.
     log_level = parsed_args["log"]
+    collector = nothing
     if log_level == "debug"
         global_logger(ConsoleLogger(stderr, Logging.Debug))
     elseif log_level == "info"
         global_logger(ConsoleLogger(stderr, Logging.Info))
     else
-        global_logger(ConsoleLogger(stderr, Logging.Warn))
+        collector = CollectingLogger()
+        global_logger(collector)
     end
 
     # --- Target path ---
@@ -584,6 +659,8 @@ function (@main)(ARGS)
     catch err
         err isa InterruptException && rethrow()
         pr === nothing || _clear_progress!(pr)
+        # Buffered warnings often carry the context of the failure — show them.
+        _print_workspace_warnings(stderr, _drain_warnings!(collector), stderr isa Base.TTY)
         @debug "Analysis failed" target_path exception=(err, catch_backtrace())
         printstyled(stderr, "error", color=:red, bold=true)
         println(stderr, ": julialint failed to analyze ", target_path, ": ", _brief_error(err))
@@ -602,6 +679,15 @@ function (@main)(ARGS)
         end
     end
     sort!(entries, by=x -> (x[1], x[2]))
+
+    # --- Workspace warnings ---
+    # Env-resolution failures arrive both as buffered log records and as
+    # `environment_errors` diagnostics; the diagnostic is the canonical report,
+    # so matching buffered records are dropped instead of shown twice.
+    # (Computed before --quiet filters the diagnostics away.)
+    env_error_messages = Set{String}(e[3].message for e in entries if e[3].code === :environment_errors)
+    warnings = filter(m -> m ∉ env_error_messages, _drain_warnings!(collector))
+    _print_workspace_warnings(stderr, warnings, stderr isa Base.TTY)
 
     # --- Apply --quiet filter ---
     if quiet
