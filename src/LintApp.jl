@@ -19,6 +19,8 @@ const _SEVERITY_COLORS = Dict{Symbol,String}(
 const _RESET = "\e[0m"
 const _BOLD = "\e[1m"
 const _BLUE = "\e[34m"
+const _GREEN = "\e[32m"
+const _GRAY = "\e[90m"
 
 # ---------------------------------------------------------------------------
 # Line extraction helper
@@ -371,9 +373,16 @@ end
 # ---------------------------------------------------------------------------
 
 # Progress goes to stderr so it never mixes with results on stdout (or -o).
-# Two render modes: `live` rewrites a single status line in place (stderr is a
-# TTY); otherwise plain lines are printed — one per phase transition plus
-# throttled count updates — so CI logs show liveness without flooding.
+# Two render modes. In `live` mode (stderr is a TTY) a multi-line block is
+# redrawn in place: every phase that has ever been active gets its own
+# top-level row — a Pkg-style progress bar for the counted phases (parsing,
+# analysis, environment indexing, downloads, refreshes), a spinner for the
+# single-operation ones —
+# with indented sub-status lines underneath showing the busiest environments
+# and their latest message. Rows are sticky (a completed phase keeps its full
+# bar) so the block never reshuffles; only the detail lines come and go.
+# In plain mode (CI logs) single lines are printed — one per phase transition
+# plus throttled count updates — so logs show liveness without flooding.
 #
 # Updates arrive from two sources: the JuliaWorkspaces progress callback
 # (phase-prefixed keys like "index:<env>", fired on the dynamic-feature reactor
@@ -385,21 +394,30 @@ end
 mutable struct ProgressReporter
     io::IO
     live::Bool
+    color::Bool                                  # live mode: ANSI-color the bars
     lock::ReentrantLock
-    phase_active::Dict{String,Dict{String,Int}}  # phase -> (active key -> latest pct)
+    phase_active::Dict{String,Dict{String,Tuple{Int,String}}}  # phase -> (active key -> (latest pct, latest message))
     phase_seen::Dict{String,Set{String}}         # phase -> every key ever active
     phase_done::Dict{String,Int}                 # phase -> completed key count
+    phase_rows::Vector{String}                   # display rows in order; pre-seeded with the standard pipeline
+    phase_started::Set{String}                   # phases that have received a report (pending rows show "waiting")
+    parse_done::Int
+    parse_total::Int
     lint_done::Int
     lint_total::Int
     last_render::Float64
     last_line::String
+    region_height::Int                           # live mode: rows currently drawn on screen
+    spinner_idx::Int                             # live mode: advances once per rendered frame
+    force_render::Bool                           # bypass the throttle once (structural change)
     t0::Float64
 end
 
-ProgressReporter(io::IO, live::Bool) = ProgressReporter(
-    io, live, ReentrantLock(),
-    Dict{String,Dict{String,Int}}(), Dict{String,Set{String}}(), Dict{String,Int}(),
-    0, 0, 0.0, "", time())
+ProgressReporter(io::IO, live::Bool; color::Bool=false) = ProgressReporter(
+    io, live, color, ReentrantLock(),
+    Dict{String,Dict{String,Tuple{Int,String}}}(), Dict{String,Set{String}}(), Dict{String,Int}(),
+    ["parse", "index", "download", "lint"], Set{String}(),
+    0, 0, 0, 0, 0.0, "", 0, 0, false, time())
 
 # Phase = key prefix before ':' (index/download/refresh), else the whole key.
 function _progress_phase(key::String)
@@ -407,17 +425,36 @@ function _progress_phase(key::String)
     return i === nothing ? key : key[1:prevind(key, i)]
 end
 
-function _report_jw!(pr::ProgressReporter, key::String, ::String, pct::Int)
+# Mark a phase as having activity: pending pre-seeded rows become live, and
+# phases outside the standard pipeline get a row appended at the bottom.
+# Caller must hold pr.lock.
+function _start_phase!(pr::ProgressReporter, phase::String)
+    phase in pr.phase_started && return
+    push!(pr.phase_started, phase)
+    phase in pr.phase_rows || push!(pr.phase_rows, phase)
+    pr.force_render = true
+    return
+end
+
+function _report_jw!(pr::ProgressReporter, key::String, message::String, pct::Int)
     lock(pr.lock) do
         phase = _progress_phase(key)
-        active = get!(Dict{String,Int}, pr.phase_active, phase)
+        # "refresh" is background revalidation of a cached environment served
+        # from a previous run: it starts only after all required work is done,
+        # this run's results never depend on it, and even its failure is
+        # discarded (the served environment stays in use). Showing it would
+        # make julialint look busy with work it doesn't need — hide it.
+        phase == "refresh" && return
+        active = get!(Dict{String,Tuple{Int,String}}, pr.phase_active, phase)
         if pct >= 100
             haskey(active, key) || return
             delete!(active, key)
             pr.phase_done[phase] = get(pr.phase_done, phase, 0) + 1
+            pr.force_render = true
         else
+            _start_phase!(pr, phase)
             push!(get!(Set{String}, pr.phase_seen, phase), key)
-            active[key] = pct
+            active[key] = (pct, message)
         end
         _maybe_render!(pr)
     end
@@ -426,6 +463,8 @@ end
 
 function _report_lint!(pr::ProgressReporter, done::Int, total::Int)
     lock(pr.lock) do
+        _start_phase!(pr, "lint")
+        (total != pr.lint_total || done >= total) && (pr.force_render = true)
         pr.lint_done = done
         pr.lint_total = total
         _maybe_render!(pr)
@@ -433,59 +472,255 @@ function _report_lint!(pr::ProgressReporter, done::Int, total::Int)
     return nothing
 end
 
-# The most user-meaningful thing currently in flight. Linting wins while it is
-# underway; between lint rounds the environment phases take over again.
+function _report_parse!(pr::ProgressReporter, done::Int, total::Int)
+    lock(pr.lock) do
+        _start_phase!(pr, "parse")
+        (total != pr.parse_total || done >= total) && (pr.force_render = true)
+        pr.parse_done = done
+        pr.parse_total = total
+        _maybe_render!(pr)
+    end
+    return nothing
+end
+
+# Plain mode only (the live block shows every phase at once): the most
+# user-meaningful thing currently in flight. The lint sweep wins while it is
+# underway; otherwise parsing, then the environment phases.
 function _current_label(pr::ProgressReporter)
     if pr.lint_total > 0 && pr.lint_done < pr.lint_total
         return "Linting files ($(pr.lint_done)/$(pr.lint_total))"
     end
+    if pr.parse_total > 0 && pr.parse_done < pr.parse_total
+        return "Parsing files ($(pr.parse_done)/$(pr.parse_total))"
+    end
     for (phase, name) in (("index", "Indexing environments"),
-                          ("download", "Downloading symbol caches"),
-                          ("refresh", "Refreshing environments"))
+                          ("download", "Downloading symbol caches"))
         active = get(pr.phase_active, phase, nothing)
         (active === nothing || isempty(active)) && continue
         done = get(pr.phase_done, phase, 0)
         total = length(pr.phase_seen[phase])
         return "$name ($done/$total)"
     end
-    isempty(get(pr.phase_active, "package-caches", Dict{String,Int}())) || return "Loading package caches"
-    isempty(get(pr.phase_active, "bootstrap", Dict{String,Int}())) || return "Preparing analysis environment"
+    isempty(get(() -> Dict{String,Tuple{Int,String}}(), pr.phase_active, "package-caches")) || return "Loading package caches"
+    isempty(get(() -> Dict{String,Tuple{Int,String}}(), pr.phase_active, "bootstrap")) || return "Preparing analysis environment"
     return ""
 end
 
 # Label up to the "(k/n)" counter, for phase-transition detection.
 _label_head(s::AbstractString) = String(first(split(s, " (")))
 
+# Human name for a JW progress key: "index:<path>" -> basename of the path,
+# "index:<path>:<pkg>" -> the package name. Parse from the right because
+# Windows paths contain ':' themselves.
+function _key_display_name(key::String)
+    i = findfirst(==(':'), key)
+    suffix = i === nothing ? key : key[nextind(key, i):end]
+    parts = rsplit(suffix, ':', limit=2)
+    if length(parts) == 2 && !occursin('\\', parts[2]) && !occursin('/', parts[2])
+        return String(parts[2])
+    end
+    name = basename(rstrip(suffix, ('/', '\\')))
+    return isempty(name) ? suffix : name
+end
+
+# Sub-status (name, text) pairs for the active keys of a phase: the busiest
+# few environments with their latest percentage and message. The "(i/n)"
+# package counter inside indexer messages is stripped: it counts packages
+# within that environment, and next to the environment percentage two
+# unrelated counters on one line just confuse.
+function _active_showvalues(active::Dict{String,Tuple{Int,String}}; max_lines::Int=4)
+    entries = sort!(collect(active); by=kv -> (-kv[2][1], kv[1]))
+    vals = Tuple{String,String}[
+        (_key_display_name(k), string(pct, "% — ", replace(msg, r" \(\d+/\d+\)" => "")))
+        for (k, (pct, msg)) in first(entries, max_lines)]
+    length(entries) > max_lines && push!(vals, ("…", string("+", length(entries) - max_lines, " more")))
+    return vals
+end
+
+# A modest fixed-width bar reads better than one spanning the whole terminal,
+# and by staying well clear of the right edge it also survives window resizes
+# and font zooms — a full-width line reflows when the terminal narrows, which
+# desyncs in-place redrawing and strands stale copies in the scrollback.
+# Shrink further on narrow terminals (35 columns reserved for the counts, bar
+# delimiters and the ETA).
+_bar_length(width::Int, desc::String) = max(10, min(40, width - length(desc) - 35))
+
+# The progress-bar style Julia 1.12's Pkg and precompilation UIs use
+# (Pkg/src/MiniProgressBars.jl): heavy-horizontal fill in color over a
+# light_black track of the same glyph, with a half-glyph head marking the
+# boundary — `╸` in the bar color once the fractional cell is more than half
+# full, `╺` in the track color before that. Without color the track becomes
+# spaces and the head is dropped, exactly as Pkg renders it. Display width is
+# always `len`.
+function _bar(done::Int, total::Int, len::Int; color::Bool=false)
+    frac = clamp(done / max(total, 1), 0.0, 1.0)
+    n_filled = floor(Int, len * frac)
+    partial = len * frac - n_filled
+    n_left = len - n_filled
+    color || return string("━"^n_filled, " "^n_left)
+    out = IOBuffer()
+    print(out, _GREEN, "━"^n_filled)
+    if n_left > 0
+        if partial > 0.5
+            print(out, "╸", _GRAY, "━"^(n_left - 1))
+        else
+            print(out, _GRAY, "╺", "━"^(n_left - 1))
+        end
+    end
+    print(out, _RESET)
+    return String(take!(out))
+end
+
+# Plain track without a head glyph, for pending rows.
+_track(len::Int; color::Bool=false) = color ? string(_GRAY, "━"^len, _RESET) : " "^len
+
+const _SPINNER = ('◐', '◓', '◑', '◒')
+
+# Row labels. Row *order* comes from `phase_rows`: the standard pipeline is
+# pre-seeded in execution order at construction (so users see upfront what is
+# still coming, and the lint bar sits at the bottom where it fills last);
+# anything else appends below as it appears. "refresh" is deliberately absent
+# — see _report_jw!.
+const _PHASE_NAMES = Dict(
+    "parse" => "Parsing files",
+    "lint" => "Linting files",
+    "index" => "Indexing environments",
+    "download" => "Downloading caches",
+    "package-caches" => "Loading package caches",
+    "bootstrap" => "Preparing analysis environment",
+)
+
+# One bar row. Fits within the terminal by construction in the normal case;
+# on absurdly narrow terminals it degrades to an uncolored truncated line
+# (truncating through ANSI codes would corrupt the escape stream).
+function _bar_line(desc::String, done::Int, total::Int, len::Int, width::Int, color::Bool)
+    counts = string(done, "/", total)
+    if length(desc) + 1 + len + 1 + length(counts) > width - 1
+        return first(string(desc, " ", _bar(done, total, len), " ", counts), width - 1)
+    end
+    return string(desc, " ", _bar(done, total, len; color=color), " ", counts)
+end
+
+# The whole live block, one row per entry of `phase_rows` (the pre-seeded
+# pipeline plus anything that appeared later), plus indented sub-status lines
+# for the keyed phases. Rows whose phase has not started yet render a plain
+# track with "waiting" so users see upfront what is still coming. Pure
+# (state -> lines), so it can be unit-tested directly; with color off (the
+# default in tests) the lines carry no escape codes. Every line stays below
+# the terminal width: a line that wraps would desync the in-place redraw.
+# Caller must hold pr.lock.
+function _render_frame(pr::ProgressReporter, width::Int)
+    lines = String[]
+    isempty(pr.phase_started) && return lines
+    descw = maximum(length(get(_PHASE_NAMES, phase, phase)) for phase in pr.phase_rows)
+    detail(l) = pr.color ? string(_GRAY, first(l, width - 1), _RESET) : first(l, width - 1)
+    for phase in pr.phase_rows
+        desc = rpad(get(_PHASE_NAMES, phase, phase), descw)
+        blen = _bar_length(width, desc)
+        active = get(pr.phase_active, phase, nothing)
+        if !(phase in pr.phase_started)
+            push!(lines, first(string(desc, " ", _track(blen; color=pr.color), " waiting"), width - 1))
+            # The lint bar is the one whose wait is long enough to explain.
+            phase == "lint" && push!(lines, detail("    waiting for environment indexing and downloads to finish"))
+        elseif phase == "parse"
+            total = max(pr.parse_total, 1)
+            push!(lines, _bar_line(desc, clamp(pr.parse_done, 0, total), total, blen, width, pr.color))
+        elseif phase == "lint"
+            total = max(pr.lint_total, 1)
+            push!(lines, _bar_line(desc, clamp(pr.lint_done, 0, total), total, blen, width, pr.color))
+        elseif phase in ("index", "download")
+            done = get(pr.phase_done, phase, 0)
+            # The denominator grows as keys appear, so the bar can step
+            # backwards; the printed count right after it keeps that legible.
+            total = max(length(get(() -> Set{String}(), pr.phase_seen, phase)), done, 1)
+            push!(lines, _bar_line(desc, done, total, blen, width, pr.color))
+            if active !== nothing && !isempty(active)
+                for (n, v) in _active_showvalues(active; max_lines=2)
+                    push!(lines, detail(string("    ", n, "  ", v)))
+                end
+            end
+        else  # package-caches / bootstrap: single indeterminate operation
+            if active === nothing || isempty(active)
+                push!(lines, first(string(desc, "  done"), width - 1))
+            else
+                msg = last(first(values(active)))
+                push!(lines, first(string(desc, " ", _SPINNER[mod1(pr.spinner_idx, length(_SPINNER))], "  ", msg), width - 1))
+            end
+        end
+    end
+    return lines
+end
+
+# Swap the on-screen block for `lines`, in place. Invariant: outside this
+# function the cursor always rests at column 0 of the block's first row, so a
+# redraw overwrites each row top to bottom (erasing it first), blanks any
+# leftover rows from a taller previous frame, and moves back up. One buffered
+# write per frame so a slow terminal never shows a torn block. Caller must
+# hold pr.lock.
+function _draw_region!(pr::ProgressReporter, lines::Vector{String})
+    h = max(length(lines), pr.region_height)
+    h == 0 && return
+    buf = IOBuffer()
+    for l in lines
+        print(buf, "\e[2K", l, "\n")
+    end
+    for _ in 1:(h - length(lines))
+        print(buf, "\e[2K\n")
+    end
+    print(buf, "\e[", h, "A")
+    print(pr.io, String(take!(buf)))
+    flush(pr.io)
+    pr.region_height = length(lines)
+    return
+end
+
+# Erase the block completely; the cursor ends where its first row was, ready
+# for normal line output (error text or the final summary).
+_clear_region!(pr::ProgressReporter) = _draw_region!(pr, String[])
+
+# Caller must hold pr.lock. Redraws are throttled; structural changes (a phase
+# appearing, a key completing, the lint total changing) set force_render so
+# even states shorter than the redraw interval show up once.
+function _render_live!(pr::ProgressReporter)
+    now = time()
+    !pr.force_render && now - pr.last_render < 0.1 && return
+    pr.force_render = false
+    pr.spinner_idx += 1
+    width = try
+        displaysize(pr.io)[2]
+    catch
+        80
+    end
+    _draw_region!(pr, _render_frame(pr, width))
+    pr.last_render = now
+    return
+end
+
 # Caller must hold pr.lock.
 function _maybe_render!(pr::ProgressReporter)
+    if pr.live
+        _render_live!(pr)
+        return
+    end
     label = _current_label(pr)
     (isempty(label) || label == pr.last_line) && return
     now = time()
     # Phase transitions always render so short phases still show up; within a
-    # phase, count updates are throttled (tight for a live line, coarse for
-    # scrolling plain lines).
+    # phase, count updates are throttled so scrolling plain lines don't flood.
     if _label_head(label) == _label_head(pr.last_line)
-        min_dt = pr.live ? 0.1 : 5.0
-        now - pr.last_render < min_dt && return
+        now - pr.last_render < 5.0 && return
     end
-    if pr.live
-        print(pr.io, "\r\e[2K", label)
-    else
-        println(pr.io, label)
-    end
+    println(pr.io, label)
     flush(pr.io)
     pr.last_render = now
     pr.last_line = label
     return
 end
 
-# Clear the live status line (before error output or the final summary).
+# Clear the live block (before error output or the final summary).
 function _clear_progress!(pr::ProgressReporter)
     lock(pr.lock) do
-        if pr.live && !isempty(pr.last_line)
-            print(pr.io, "\r\e[2K")
-            flush(pr.io)
-        end
+        pr.live && _clear_region!(pr)
         pr.last_line = ""
     end
     return nothing
@@ -639,7 +874,8 @@ function (@main)(ARGS)
     pr = if parsed_args["no-progress"]::Bool
         nothing
     else
-        ProgressReporter(stderr, stderr isa Base.TTY && log_level === nothing)
+        ProgressReporter(stderr, stderr isa Base.TTY && log_level === nothing;
+                         color=Base.get_have_color())
     end
 
     # --- Lint ---
@@ -653,6 +889,14 @@ function (@main)(ARGS)
             dynamic=JuliaWorkspaces.DynamicIndexingOnly,
             symbolcache_download=true,
             progress_callback=pr === nothing ? nothing : (key, msg, pct) -> _report_jw!(pr, key, msg, pct))
+        # Parse everything while the environments index in the background
+        # (parsing is environment-independent, so nothing is wasted), then wait
+        # for indexing/downloads to finish so the analysis runs exactly once
+        # with full environment information instead of once per environment
+        # batch.
+        JuliaWorkspaces.parse_files_blocking(jw,
+            progress_callback=pr === nothing ? nothing : (done, total) -> _report_parse!(pr, done, total))
+        JuliaWorkspaces.wait_until_ready(jw)
         all_diagnostics = get_diagnostics_blocking(jw,
             progress_callback=pr === nothing ? nothing : (done, total) -> _report_lint!(pr, done, total))
         pr === nothing || _finish_progress!(pr, length(all_diagnostics))
@@ -801,9 +1045,27 @@ using PrecompileTools: @setup_workload, @compile_workload
                 symbolcache_download=false,
                 store_path=mktempdir(),
                 progress_callback=(key, msg, pct) -> _report_jw!(pr, key, msg, pct))
+            JuliaWorkspaces.parse_files_blocking(jw2,
+                progress_callback=(done, total) -> _report_parse!(pr, done, total))
+            JuliaWorkspaces.wait_until_ready(jw2)
             get_diagnostics_blocking(jw2,
                 progress_callback=(done, total) -> _report_lint!(pr, done, total))
             _finish_progress!(pr, 1)
+
+            # Replay the live (ProgressMeter-backed) rendering path into a
+            # buffer so its specializations land in the pkgimage too.
+            prl = ProgressReporter(IOBuffer(), true; color=true)
+            _report_jw!(prl, "bootstrap", "Booting...", 0)
+            _report_parse!(prl, 1, 2)
+            _report_parse!(prl, 2, 2)
+            _report_jw!(prl, "index:" * workload_dir, "Queued for indexing...", 0)
+            _report_jw!(prl, "index:" * workload_dir, "Indexing...", 50)
+            _report_jw!(prl, "download:" * workload_dir, "Downloading caches (0/1)...", 0)
+            _report_jw!(prl, "refresh:" * workload_dir, "Refreshing environment...", 0)  # hidden phase
+            _report_lint!(prl, 1, 2)
+            _report_lint!(prl, 2, 2)
+            _report_jw!(prl, "index:" * workload_dir, "Done", 100)
+            _finish_progress!(prl, 2)
             put!(jw2.dynamic_feature.in_channel, JuliaWorkspaces.ShutdownMsg())
             while JuliaWorkspaces.state(jw2.dynamic_feature.controller_fsm) != JuliaWorkspaces.DynamicControllerStopped
                 yield()

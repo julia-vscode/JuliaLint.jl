@@ -43,6 +43,7 @@ Julia files. When no path is given, the current directory is used.
 | `-q`, `--quiet` | Show only errors (suppress warnings, info, and hints). |
 | `--max-warnings N` | Exit with code `1` if the warning count exceeds `N` (`-1` = unlimited). |
 | `-o`, `--output-file FILE` | Write output to a file instead of stdout. |
+| `--no-progress` | Disable progress output. |
 | `--log LEVEL` | Set the log level (`debug` or `info`); warnings and errors are always shown. |
 | `--version` | Print the version and exit. |
 | `-h`, `--help` | Print help and exit. |
@@ -71,6 +72,24 @@ julialint --format json -o diagnostics.json src/
 # Emit SARIF for GitHub Code Scanning
 julialint --format sarif -o results.sarif src/
 ```
+
+## Progress output
+
+While `julialint` works it reports progress on **stderr**, so it never mixes
+with diagnostics on stdout (or a `-o` file). The run parses all files while
+the project environments are indexed in the background, then performs a single
+analysis pass once indexing is complete. When stderr is a terminal, progress is
+a live multi-bar display in the style of Julia's package manager: the
+pipeline's phases — parsing, environment indexing, symbol-cache downloads,
+linting — are shown as progress bars from the start (phases that have not
+begun are marked as waiting), with indented sub-status lines showing which
+environments are being worked on right now. When stderr is redirected
+(e.g. in CI logs), plain throttled status lines are printed instead. Either way
+the run ends with a summary line like `Analyzed 128 files in 12.3s`.
+
+`--no-progress` disables progress output entirely, and `--log debug`/`--log
+info` falls back to the plain status lines so log records and the live display
+don't fight over the terminal.
 
 ## Output formats
 
