@@ -345,6 +345,9 @@ function parse_commandline(ARGS)
         "--no-progress"
             help = "disable progress output on stderr"
             action = :store_true
+        "--experimental-lowering-lint"
+            help = "experimental: JuliaLowering-backed unused-variable analysis"
+            action = :store_true
     end
 
     return parse_args(ARGS, s)
@@ -866,6 +869,7 @@ function (@main)(ARGS)
     quiet     = parsed_args["quiet"]::Bool
     max_warn  = parsed_args["max-warnings"]::Int
     out_file  = parsed_args["output-file"]
+    lowering_lint = parsed_args["experimental-lowering-lint"]::Bool
 
     # --- Progress reporting ---
     # Live single-line rendering only on a TTY and only when the ConsoleLogger
@@ -889,6 +893,9 @@ function (@main)(ARGS)
             dynamic=JuliaWorkspaces.DynamicIndexingOnly,
             symbolcache_download=true,
             progress_callback=pr === nothing ? nothing : (key, msg, pct) -> _report_jw!(pr, key, msg, pct))
+        # Opt into the JuliaLowering-backed producer for the unused-binding
+        # rules before any parse/lint work happens.
+        lowering_lint && set_lowering_lint!(jw, true)
         # Parse everything while the environments index in the background
         # (parsing is environment-independent, so nothing is wasted), then wait
         # for indexing/downloads to finish so the analysis runs exactly once
