@@ -519,7 +519,10 @@ function _key_display_name(key::String)
     if length(parts) == 2 && !occursin('\\', parts[2]) && !occursin('/', parts[2])
         return String(parts[2])
     end
-    name = basename(rstrip(suffix, ('/', '\\')))
+    # Split on both separators rather than calling `basename`, which only knows
+    # about '\\' when it runs on Windows: these keys carry whatever paths the
+    # machine that produced them uses.
+    name = String(last(split(rstrip(suffix, ('/', '\\')), ('/', '\\'))))
     return isempty(name) ? suffix : name
 end
 

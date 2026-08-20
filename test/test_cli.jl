@@ -81,7 +81,7 @@ end
     @test d["severity"] == "error"
     @test haskey(d, "message")
     @test haskey(d, "rule")
-    @test d["startLine"] isa Int
+    @test d["startLine"] isa Integer
 end
 
 @testitem "sarif output" setup=[CLIHelper] begin
