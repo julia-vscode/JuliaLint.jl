@@ -6,21 +6,21 @@
     @test parsed["quiet"] == false
     @test parsed["max-warnings"] == -1
     @test parsed["output-file"] === nothing
-    @test parsed["experimental-lowering-lint"] == false
+    @test parsed["experimental-v2"] == false
 
-    parsed = LintApp.parse_commandline(["--experimental-lowering-lint"])
-    @test parsed["experimental-lowering-lint"] == true
+    parsed = LintApp.parse_commandline(["--experimental-v2"])
+    @test parsed["experimental-v2"] == true
 end
 
-@testitem "experimental lowering lint flag flags an unused variable" setup=[CLIHelper] begin
+@testitem "experimental v2 flag flags an unused variable" setup=[CLIHelper] begin
     run_cli = CLIHelper.run_cli
 
     dir = mktempdir()
     write(joinpath(dir, "a.jl"), "function f(x)\n    unused_local = 1\n    return x\nend\n")
 
-    # The unused_binding rule defaults to :hint; the lowering engine reports it
+    # The unused_binding rule defaults to :hint; the v2 engine reports it
     # with the variable name in the message.
-    code_on, out_on, _ = run_cli(["--experimental-lowering-lint", dir])
+    code_on, out_on, _ = run_cli(["--experimental-v2", dir])
     @test code_on == 0
     @test occursin("unused_local", out_on)
 
