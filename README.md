@@ -16,14 +16,15 @@ or SARIF for integration with other tools and CI systems.
 
 ## Installation
 
-`julialint` is distributed as a Julia app. Install it with the `app` command in the package REPL:
+`julialint` is a [Julia app](https://pkgdocs.julialang.org/dev/apps/) and requires
+Julia 1.12 or newer. Install it with the `app` command in the package REPL:
 
 ```
-pkg> app add https://github.com/julia-vscode/LintApp.jl
+pkg> app add LintApp
 ```
 
-This installs the `julialint` executable and makes it available on your
-`PATH`.
+This installs the `julialint` executable into `~/.julia/bin`. Make sure that
+directory is on your `PATH`.
 
 ## Usage
 
