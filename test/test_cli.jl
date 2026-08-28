@@ -6,6 +6,28 @@
     @test parsed["quiet"] == false
     @test parsed["max-warnings"] == -1
     @test parsed["output-file"] === nothing
+    @test parsed["experimental-v2"] == false
+
+    parsed = LintApp.parse_commandline(["--experimental-v2"])
+    @test parsed["experimental-v2"] == true
+end
+
+@testitem "experimental v2 flag flags an unused variable" setup=[CLIHelper] begin
+    run_cli = CLIHelper.run_cli
+
+    dir = mktempdir()
+    write(joinpath(dir, "a.jl"), "function f(x)\n    unused_local = 1\n    return x\nend\n")
+
+    # The unused_binding rule defaults to :hint; the v2 engine reports it
+    # with the variable name in the message.
+    code_on, out_on, _ = run_cli(["--experimental-v2", dir])
+    @test code_on == 0
+    @test occursin("unused_local", out_on)
+
+    # Without the flag the run must still succeed (StaticLint may or may not
+    # report its own version of the finding; we only assert no crash).
+    code_off, _, _ = run_cli([dir])
+    @test code_off == 0
 end
 
 @testitem "nonexistent path" setup=[CLIHelper] begin

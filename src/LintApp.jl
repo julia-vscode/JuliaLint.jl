@@ -345,6 +345,9 @@ function parse_commandline(ARGS)
         "--no-progress"
             help = "disable progress output on stderr"
             action = :store_true
+        "--experimental-v2"
+            help = "experimental: enable the v2 (JuliaLowering-backed) engine, incl. macro expansion"
+            action = :store_true
     end
 
     return parse_args(ARGS, s)
@@ -591,6 +594,7 @@ const _PHASE_NAMES = Dict(
     "download" => "Downloading caches",
     "package-caches" => "Loading package caches",
     "bootstrap" => "Preparing analysis environment",
+    "expand" => "Expanding macros",
 )
 
 # One bar row. Fits within the terminal by construction in the normal case;
@@ -737,6 +741,77 @@ function _finish_progress!(pr::ProgressReporter, nfiles::Int)
 end
 
 # ---------------------------------------------------------------------------
+# Workspace lifecycle helpers (v2 path)
+# ---------------------------------------------------------------------------
+
+# DJP-side macro expansion is deliberately *not* a dynamic work item: expansion
+# batches never touch the engine's pending count, so `wait_until_ready` — and
+# with it `get_diagnostics_blocking`'s internal readiness loop — returns while
+# batches are still out with the env children. A one-shot CLI therefore has to
+# settle them itself: drive the workspace until nothing it requested is still in
+# flight, then recompute the diagnostics. A spliced expansion can expose fresh
+# opaque macrocalls, so the whole thing loops until a pass requests nothing new.
+#
+# Only keys actually requested are waited on. "Every required key has an
+# outcome" would hang: the engine skips required sites whose source text or file
+# maps it cannot reattach, and those never settle.
+#
+# Every requested entry is guaranteed to settle (`:ok` or `:failed`), so the
+# deadline is only a backstop against a wedged child — on expiry we warn and
+# report what we have rather than blocking the CLI forever.
+function _settle_expansions!(jw, pr, diagnostics; deadline_seconds=300)
+    df = jw.dynamic_feature
+    df === nothing && return diagnostics
+
+    t0 = time()
+    reflected = 0   # requested entries already folded into `diagnostics`
+    timed_out = false
+    while true
+        # Wait out everything currently in flight.
+        while true
+            JuliaWorkspaces.process_from_dynamic(jw)
+            have = JuliaWorkspaces.input_macro_expansions(jw.runtime)
+            total = length(df.requested_expansions)
+            inflight = count(k -> !haskey(have, k), df.requested_expansions)
+            inflight == 0 && break
+            if time() - t0 > deadline_seconds
+                @warn "Macro expansion did not settle within $(deadline_seconds)s; results may be incomplete" inflight
+                timed_out = true
+                break
+            end
+            pr === nothing || _report_jw!(pr, "expand", "Expanding macros ($(total - inflight)/$total)...", 0)
+            sleep(0.1)
+        end
+        timed_out && break
+
+        # Nothing new was requested since the last sweep: the diagnostics on
+        # hand already see every expansion.
+        total = length(df.requested_expansions)
+        total == reflected && break
+        reflected = total
+
+        diagnostics = get_diagnostics_blocking(jw,
+            progress_callback=pr === nothing ? nothing : (done, total) -> _report_lint!(pr, done, total))
+    end
+
+    # A no-op unless the phase actually became active.
+    pr === nothing || _report_jw!(pr, "expand", "Expanding macros", 100)
+    return diagnostics
+end
+
+# The canonical shutdown handshake. Under `DynamicPersistent` the env children
+# are kept alive by design, so a one-shot run has to tear them down explicitly.
+function _shutdown_dynamic!(jw)
+    df = jw.dynamic_feature
+    df === nothing && return nothing
+    put!(df.in_channel, JuliaWorkspaces.ShutdownMsg())
+    while JuliaWorkspaces.state(df.controller_fsm) != JuliaWorkspaces.DynamicControllerStopped
+        yield()
+    end
+    return nothing
+end
+
+# ---------------------------------------------------------------------------
 # Warning collection
 # ---------------------------------------------------------------------------
 
@@ -869,6 +944,7 @@ function (@main)(ARGS)
     quiet     = parsed_args["quiet"]::Bool
     max_warn  = parsed_args["max-warnings"]::Int
     out_file  = parsed_args["output-file"]
+    v2        = parsed_args["experimental-v2"]::Bool
 
     # --- Progress reporting ---
     # Live single-line rendering only on a TTY and only when the ConsoleLogger
@@ -889,9 +965,19 @@ function (@main)(ARGS)
     local jw, all_diagnostics
     try
         jw = workspace_from_folders([target_path],
-            dynamic=JuliaWorkspaces.DynamicIndexingOnly,
+            # Macro expansion runs on the env child that indexed the
+            # environment, so the v2 path needs those children kept alive;
+            # they are torn down explicitly once the analysis is done.
+            dynamic=v2 ? JuliaWorkspaces.DynamicPersistent : JuliaWorkspaces.DynamicIndexingOnly,
             symbolcache_download=true,
             progress_callback=pr === nothing ? nothing : (key, msg, pct) -> _report_jw!(pr, key, msg, pct))
+        # Opt into the v2 (JuliaLowering-backed) engine and its DJP-side macro
+        # expansion before any parse/lint work happens. Expansion is only
+        # effective together with the v2 flag and DynamicPersistent.
+        if v2
+            set_v2_enabled!(jw, true)
+            JuliaWorkspaces.set_macro_expansion!(jw, true)
+        end
         # Parse everything while the environments index in the background
         # (parsing is environment-independent, so nothing is wasted), then wait
         # for indexing/downloads to finish so the analysis runs exactly once
@@ -902,9 +988,11 @@ function (@main)(ARGS)
         JuliaWorkspaces.wait_until_ready(jw)
         all_diagnostics = get_diagnostics_blocking(jw,
             progress_callback=pr === nothing ? nothing : (done, total) -> _report_lint!(pr, done, total))
+        v2 && (all_diagnostics = _settle_expansions!(jw, pr, all_diagnostics))
         pr === nothing || _finish_progress!(pr, length(all_diagnostics))
     catch err
         err isa InterruptException && rethrow()
+        v2 && @isdefined(jw) && _shutdown_dynamic!(jw)
         pr === nothing || _clear_progress!(pr)
         # Buffered warnings often carry the context of the failure — show them.
         _print_workspace_warnings(stderr, _drain_warnings!(collector), stderr isa Base.TTY)
@@ -926,6 +1014,10 @@ function (@main)(ARGS)
         end
     end
     sort!(entries, by=x -> (x[1], x[2]))
+
+    # Last use of the workspace: under the v2 path its env children are
+    # persistent, so tear them down before the reporting work.
+    v2 && _shutdown_dynamic!(jw)
 
     # --- Workspace warnings ---
     # Env-resolution failures arrive both as buffered log records and as
@@ -1069,10 +1161,7 @@ using PrecompileTools: @setup_workload, @compile_workload
             _report_lint!(prl, 2, 2)
             _report_jw!(prl, "index:" * workload_dir, "Done", 100)
             _finish_progress!(prl, 2)
-            put!(jw2.dynamic_feature.in_channel, JuliaWorkspaces.ShutdownMsg())
-            while JuliaWorkspaces.state(jw2.dynamic_feature.controller_fsm) != JuliaWorkspaces.DynamicControllerStopped
-                yield()
-            end
+            _shutdown_dynamic!(jw2)
         end
     end
 end
